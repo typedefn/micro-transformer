@@ -59,9 +59,8 @@ class MultiHeadAttentionLayer {
         final_output.assign(total_tokens, embeddingLength); 
         // Initialize W_o, optimizer_o, etc.
         W_o.assign(embeddingLength, embeddingLength);
-        float base_sigma = 0.01f / (float)std::sqrt((float)embeddingLength);
-        float res_sigma = base_sigma / (float)std::sqrt(2.0f * decoder_layers);
-        he_init(W_o.raw(), embeddingLength, res_sigma);
+        float gpt_scale = 0.02f / sqrt(2.0f * (float) decoder_layers);
+        normal_init(W_o.raw(), gpt_scale);
         W_o.to_gpu();
         dW_o.assign(embeddingLength, embeddingLength);
         dW_o_temp.assign(embeddingLength, embeddingLength);
@@ -154,12 +153,14 @@ class MultiHeadAttentionLayer {
     }
 
     void update_weights(float learningRate, float scale, int current_t) {
+/*
       if (scale != 1.0f) {
         dW_o.scale(scale, dW_o);
       }
+*/
       std::vector<float>& tmp_dW_o = dW_o.raw();
       std::vector<float>& tmp_W_o = W_o.raw();
-      optimizer_o.update(tmp_W_o, tmp_dW_o, learningRate, current_t, weight_decay, 1.0f);
+      optimizer_o.update(tmp_W_o, tmp_dW_o, learningRate, current_t, weight_decay, scale);
       dW_o.to_gpu();
       W_o.to_gpu();
 

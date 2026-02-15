@@ -1,3 +1,4 @@
+#pragma once
 #include "Common.hpp"
 
 class LinearLayer {
@@ -16,10 +17,10 @@ class LinearLayer {
         dbias1.assign(1, hiddenDim);
         weights1.assign(inputDim, hiddenDim);
         dweights1.assign(inputDim, hiddenDim);
-        float res_scale = 0.01f / (float)std::sqrt((float)inputDim);
+        float res_scale = 0.02f; //0.01f / (float)std::sqrt((float)inputDim);
         // Initialize weights and biases
-        he_init(weights1.raw(), inputDim, res_scale);
-        he_init(bias1.raw(), hiddenDim, 0.0f);
+        normal_init(weights1.raw(), res_scale);
+        std::fill(bias1.raw().begin(), bias1.raw().end(), 0.0f);
 
         weights1.to_gpu();
         bias1.to_gpu();
@@ -93,16 +94,17 @@ class LinearLayer {
     }
 
     void update_weights(float learningRate, float scale, int current_t) {
+/*
       if (scale != 1.0f) {
         dweights1.scale(scale, dweights1);
         dbias1.scale(scale, dbias1);
-      }
+      }*/
       std::vector<float>& temp_dweights1 = dweights1.raw();
       std::vector<float>& temp_dbias1 = dbias1.raw();
       std::vector<float>& temp_weights1 = weights1.raw();
       std::vector<float>& temp_bias1 = bias1.raw();
-      optimizer_w1.update(temp_weights1, temp_dweights1, learningRate, current_t, weight_decay, 1.0f);
-      optimizer_b1.update(temp_bias1, temp_dbias1, learningRate, current_t, 0, 1.0f);
+      optimizer_w1.update(temp_weights1, temp_dweights1, learningRate, current_t, weight_decay, scale);
+      optimizer_b1.update(temp_bias1, temp_dbias1, learningRate, current_t, 0, scale);
 
       bias1.to_gpu();
       weights1.to_gpu();

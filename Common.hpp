@@ -20,9 +20,10 @@
 #include <hip/hip_runtime.h>
 #include <rocblas/rocblas.h>
 
+static unsigned int seed = 1;
+
 std::ofstream output_file;
 std::ifstream inputFile;
-unsigned seed = 1;
 bool verbose = false;
 bool sig = false;
 std::string filename = "model_last.data";
@@ -35,7 +36,7 @@ std::string filename = "model_last.data";
 // Update signature to accept an optional scale factor (default 1.0)
 void he_init(std::vector<float>& weights, int fan_in, float scale_factor = 1.0f) {
     // Standard deviation for ReLU networks
-    float std_dev = std::sqrt(2.0f / fan_in);
+    float std_dev = std::sqrt(2.0f / (float)fan_in);
     
     // Apply the additional scaling (important for deep residual networks)
     std_dev *= scale_factor;
@@ -57,7 +58,9 @@ static std::mt19937& get_rng() {
 void normal_init(std::vector<float>& weights, float std_dev = 0.02f) {
     std::normal_distribution<float> distribution(0.0f, std_dev);
     auto& gen = get_rng();
-    for (auto& weight : weights) weight = distribution(gen);
+    for (auto& weight : weights) {
+      weight = distribution(gen);
+    }
 }
 
 static std::vector<float> pe(int pos, int dim) {
@@ -69,7 +72,7 @@ static std::vector<float> pe(int pos, int dim) {
     
     // Standard geometric sequence for frequencies: 10000^(-2i/dim)
     // We compute the scalar divisor once per pair.
-    float div_term_scalar = -std::log(10000.0f) / dim;
+    float div_term_scalar = -std::log(10000.0f) / (float)dim;
 
     for (int i = 0; i < dim; i += 2) {
         // Calculate frequency: exp(i * -log(10000) / dim)

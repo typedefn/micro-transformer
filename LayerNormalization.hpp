@@ -176,16 +176,12 @@ public:
       dbeta.to_gpu();
     }
     void update_weights(float learningRate, float scale, int current_t) {
-        if (scale != 1.0f) {
-          dgamma.scale(scale, dgamma);
-          dbeta.scale(scale, dbeta);
-        }
         std::vector<float>&  v_gamma = gamma.raw();
         std::vector<float>&  v_dgamma = dgamma.raw();
         std::vector<float>&  v_beta = beta.raw();
         std::vector<float>&  v_dbeta = dbeta.raw();
-        optimizer_gamma.update(v_gamma, v_dgamma, learningRate, current_t, weight_decay, 1.0f);
-        optimizer_beta.update(v_beta, v_dbeta, learningRate, current_t, weight_decay, 1.0f);
+        optimizer_gamma.update(v_gamma, v_dgamma, learningRate, current_t, 0.0f, scale);
+        optimizer_beta.update(v_beta, v_dbeta, learningRate, current_t, 0.0f, scale);
 
         gamma.to_gpu();
         beta.to_gpu();

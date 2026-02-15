@@ -239,10 +239,17 @@ __global__ void kRowSumExp(const float* src, const float* max_vals, float* sum_v
     float row_max = max_vals[row];
     float local_sum = 0.0f;
 
+    // Numerical Guard: If the row_max is a masking value (e.g., -1e20f), 
+    // the entire row is likely invalid/masked.
+    if (row_max < -1e10f) {
+        if (threadIdx.x == 0) sum_vals[row] = 1.0f; // Prevent div by zero later
+        return;
+    }
+
     for (int col = threadIdx.x; col < cols; col += blockDim.x) {
         // Only compute exp if the value is within a reasonable range of the max
         float val = src[row * cols + col] - row_max;
-        if (val > -50.0f) { // Standard range for float expf stability
+        if (val > -80.0f) { // Standard range for float expf stability
             local_sum += expf(val);
         }
     }
@@ -260,7 +267,7 @@ __global__ void kRowSumExp(const float* src, const float* max_vals, float* sum_v
 
     if (threadIdx.x == 0) {
         // Ensure sum_vals never becomes exactly 0
-        sum_vals[row] = fmaxf(sdata[0], 1e-25f);
+        sum_vals[row] = fmaxf(sdata[0], 1e-30f);
     }
 }
 

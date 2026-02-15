@@ -1,7 +1,7 @@
 import random
 
 # Configuration
-TRAIN_LINES = 20000  # Increased count again for new data types
+TRAIN_LINES = 50000  # Increased count again for new data types
 VALID_LINES = 100
 seen_pairs = set()
 

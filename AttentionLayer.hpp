@@ -60,13 +60,13 @@ class AttentionLayer {
   {
 
     // The Standard Transformer Initialization (GPT-2 style)
-    float base_sigma = 0.01f / (float)std::sqrt((float)embeddingLength);
-    float res_sigma = base_sigma / (float)std::sqrt(2.0f * decoder_layers);
+    float base_sigma = 0.02f; //0.01f / (float)std::sqrt((float)embeddingLength);
+    float res_sigma = 0.02f; //base_sigma / (float)std::sqrt(2.0f * decoder_layers);
     // Q and K are kept at base_sigma to ensure initial scores are balanced
-    he_init(W_q.raw(), embeddingLength, base_sigma);
-    he_init(W_k.raw(), embeddingLength, base_sigma);
+    normal_init(W_q.raw(), base_sigma);
+    normal_init(W_k.raw(), base_sigma);
     // V is scaled down because it directly impacts the magnitude of the residual signal
-    he_init(W_v.raw(), embeddingLength, res_sigma);
+    normal_init(W_v.raw(), res_sigma);
     size_t rowSize = batchSize * seqSize;
 
     // --- Vectors (Size: Batch*Seq, HeadDim) ---
@@ -254,14 +254,16 @@ class AttentionLayer {
     }
 
     void update_weights(float learningRate, float scale, int current_t) {
+/*
       if (scale != 1.0f) {
         dW_q.scale(scale, dW_q);
         dW_k.scale(scale, dW_k);
         dW_v.scale(scale, dW_v);
       }
-      optimizer_q.update(W_q.raw(), dW_q.raw(), learningRate, current_t, weight_decay, 1.0f);
-      optimizer_k.update(W_k.raw(), dW_k.raw(), learningRate, current_t, weight_decay, 1.0f);
-      optimizer_v.update(W_v.raw(), dW_v.raw(), learningRate, current_t, weight_decay, 1.0f);
+*/
+      optimizer_q.update(W_q.raw(), dW_q.raw(), learningRate, current_t, weight_decay, scale);
+      optimizer_k.update(W_k.raw(), dW_k.raw(), learningRate, current_t, weight_decay, scale);
+      optimizer_v.update(W_v.raw(), dW_v.raw(), learningRate, current_t, weight_decay, scale);
       W_q.to_gpu(); W_k.to_gpu(); W_v.to_gpu();
     }
 

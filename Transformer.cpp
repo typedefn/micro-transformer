@@ -261,8 +261,8 @@ class Transformer {
 
     tokenEmbeddings.assign(embeddingLength * vocabSize, 0.0f);
 
-    he_init(tokenEmbeddings, vocabSize, 0.01f);
-    //normal_init(tokenEmbeddings, 0.02f);
+    //he_init(tokenEmbeddings, vocabSize, 0.01f);
+    normal_init(tokenEmbeddings, 0.02f);
 
     std::vector<int> inputIds;
     std::vector<int> validationInputIds;
@@ -349,17 +349,18 @@ class Transformer {
           std::fill(d_tokenEmbeddings.begin(), d_tokenEmbeddings.end(), 0.0f); 
           global_step++;
           // --- LEARNING RATE SCHEDULING ---
-          float min_lr = initialLearningRate * 0.1f;
-          int total_training_steps = 200 * steps_per_epoch;
+          float min_lr = 0; //initialLearningRate * 0.1f;
+          int total_training_steps = epochs * steps_per_epoch;
           if (global_step < warmup_steps) {
             // Linear warmup
             learningRate = initialLearningRate * (float)global_step / (float)warmup_steps;
           } else {
-            // Cosine decay
+            // Polinomial decay
+            float power = 2.0f;
             float progress = (float)(global_step - warmup_steps) / (float)(total_training_steps - warmup_steps);
             progress = std::min(1.0f, progress);
-            float cos_out = 0.5f * (1.0f + std::cos(M_PI * progress));
-            learningRate = min_lr + (initialLearningRate - min_lr) * cos_out;
+            float decay_factor = std::pow((1.0f - progress), power);
+            learningRate = min_lr + (initialLearningRate - min_lr) * decay_factor;
           }
           // Ensure learning rate doesn't go below a minimum value
           learningRate = std::max(learningRate, 1e-8f);
@@ -420,9 +421,9 @@ class Transformer {
           current_norm = std::sqrt(clipper.total_sum_sq);
           float total_tokens = (float)(batchSize * seqLength);
           global_scale = clipper.get_global_scale(1.0f);
-          for (auto & d : d_tokenEmbeddings)  d *= global_scale;
+ //         for (auto & d : d_tokenEmbeddings)  d *= global_scale;
 
-          optimizer_embeddings.update(tokenEmbeddings, d_tokenEmbeddings, learningRate, global_step, weight_decay, 1.0f);
+          optimizer_embeddings.update(tokenEmbeddings, d_tokenEmbeddings, learningRate, global_step, weight_decay, global_scale);
           linearLayer.update_weights(learningRate, global_scale, global_step);
           finalLayerNorm.update_weights(learningRate, global_scale, global_step);
           // Update and reset the embeddings 
@@ -533,8 +534,10 @@ class Transformer {
           LOG << "validation loss = " << current_val_loss
             << " training loss = " << total_epoch_loss / ((float)steps_per_epoch) 
             << " epoch = " << epoch << "/" << epochs 
-            << " learningRate " << learningRate;
-          LOG << "global_step = " << global_step << " normalized_norm = " << current_norm  << " scale = " << global_scale;
+            << " learningRate = " << learningRate
+            << " global_step = " << global_step 
+            << " normalized_norm = " << current_norm  
+            << " scale = " << global_scale;
           if (current_val_loss < best_validation_loss) {
             best_validation_loss = current_val_loss;
             LOG << ">>> New Best Model Found! (Loss: " << best_validation_loss << "). Saving to model_best.data ...";
@@ -755,7 +758,7 @@ class Transformer {
 };
 
 template <typename T>
-bool Mat<T>::enable_arena = true;
+bool Mat<T>::enable_arena = false;
 
 int main(int argc, char**argv) {
   if (Mat<float>::enable_arena) {
@@ -800,6 +803,8 @@ int main(int argc, char**argv) {
       if (i + 1 < argc) {
         batchSize = atoi(argv[i+1]);
       }
+    } else if (arg == "--enable-arena") {
+      Mat<float>::enable_arena = true;
     } else if (arg == "--train") {
         train = true;
     } else if (arg == "--load") {
