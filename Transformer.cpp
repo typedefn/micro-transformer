@@ -40,6 +40,7 @@ static std::vector<std::string> createTokenIds(std::map<char, int> & char_to_id,
 }
 
 class Transformer {
+  int accumulation_steps;
   Mat<float> linear_logits;
   Mat<float> probs_mat;
   std::map<char, int> char_to_id;
@@ -111,7 +112,8 @@ class Transformer {
     train(train),
     weight_decay(weight_decay),
     warmup_epochs(warmup_epochs),
-    label_smoothing(label_smoothing)
+    label_smoothing(label_smoothing),
+    accumulation_steps(1)
   {
     global_step = 0;
     load_weights = false;
@@ -250,6 +252,10 @@ class Transformer {
         if (i + 1 < argc) {
           temperature = atof(argv[i+1]);
         }
+      } else if (arg == "--accumulation-steps") {
+        if (i + 1 < argc) {
+          accumulation_steps = atoi(argv[i+1]);
+        }
       }
     }  
     linear_logits.assign(seqLength * batchSize, vindex.size());
@@ -295,7 +301,7 @@ class Transformer {
     LOG << "inputIds.size = " << inputIds.size() << " tokenEmbeddings.size = " << tokenEmbeddings.size() << " vocab.size = " << vocabSize << " validationInput.size = " << validationInputIds.size() 
         << " batchSize = " << batchSize << " num_heads = " << num_heads << " seqLength = " << seqLength << " warmup_epochs = " << warmup_epochs << " label_smoothing = " << label_smoothing
         << " embeddingLength = " << embeddingLength << " decoder_layers = " << decoder_blocks.size() << " temperature = " << temperature << " weight_decay = " << weight_decay
-        << " initialLearningRate = " << initialLearningRate;
+        << " initialLearningRate = " << initialLearningRate << " accumulation_steps = " << accumulation_steps;
     if (dropout_enabled) {
       LOG << " dropout = " << dropout;
       for (auto & d : decoder_blocks) {
@@ -325,11 +331,13 @@ class Transformer {
 
       steps_per_epoch = inputIds.size() / (batchSize * seqLength);
       if (steps_per_epoch < 1) steps_per_epoch = 1;
-      warmup_steps = warmup_epochs * steps_per_epoch;
       LOG << "START OF TRAINING: "
           << "steps_per_epoch = " << steps_per_epoch;
       float best_validation_loss = std::numeric_limits<float>::max();
-      float gradient_scale = 1.0f / (float)(batchSize * seqLength);
+      int effective_steps_per_epoch = steps_per_epoch / accumulation_steps;
+      warmup_steps = warmup_epochs * effective_steps_per_epoch;
+      int total_training_steps = (epochs * effective_steps_per_epoch);
+      float gradient_scale = 1.0f / (float)(batchSize * seqLength * accumulation_steps);
       for (int epoch = 0; epoch < epochs; ++epoch) {
         DataBatch current_batch;
         float current_norm = 0;
@@ -340,30 +348,15 @@ class Transformer {
         int validation_batch_count = 0;
         // The main training loop now iterates for a fixed number of steps
         for (int step = 0; step < steps_per_epoch; ++step) {
-          for (auto & d : decoder_blocks) {
-            d.reset();
-          }     
+          if (step % accumulation_steps == 0) {
+            for (auto & d : decoder_blocks) {
+              d.reset();
+            }     
 
-          finalLayerNorm.reset();
-          linearLayer.reset();
-          std::fill(d_tokenEmbeddings.begin(), d_tokenEmbeddings.end(), 0.0f); 
-          global_step++;
-          // --- LEARNING RATE SCHEDULING ---
-          float min_lr = 0; //initialLearningRate * 0.1f;
-          int total_training_steps = epochs * steps_per_epoch;
-          if (global_step < warmup_steps) {
-            // Linear warmup
-            learningRate = initialLearningRate * (float)global_step / (float)warmup_steps;
-          } else {
-            // Polinomial decay
-            float power = 2.0f;
-            float progress = (float)(global_step - warmup_steps) / (float)(total_training_steps - warmup_steps);
-            progress = std::min(1.0f, progress);
-            float decay_factor = std::pow((1.0f - progress), power);
-            learningRate = min_lr + (initialLearningRate - min_lr) * decay_factor;
+            finalLayerNorm.reset();
+            linearLayer.reset();
+            std::fill(d_tokenEmbeddings.begin(), d_tokenEmbeddings.end(), 0.0f); 
           }
-          // Ensure learning rate doesn't go below a minimum value
-          learningRate = std::max(learningRate, 1e-8f);
           // --- ON-THE-FLY BATCH GENERATION ---
 
           // 1. Generate Random Start Indices for this Batch
@@ -410,27 +403,44 @@ class Transformer {
             }
           }
           float max_norm = 1.0f;
- 
-          clipper.reset();
-          clipper.accumulate(d_tokenEmbeddings);
-          linearLayer.accumulate_gradients(clipper);
-          finalLayerNorm.accumulate_gradients(clipper);
-          for (auto & block : decoder_blocks) {
-            block.accumulate_gradients(clipper);
-          }
-          current_norm = std::sqrt(clipper.total_sum_sq);
-          float total_tokens = (float)(batchSize * seqLength);
-          global_scale = clipper.get_global_scale(1.0f);
- //         for (auto & d : d_tokenEmbeddings)  d *= global_scale;
+          if ((step + 1) % accumulation_steps == 0 || step == steps_per_epoch - 1) { 
+            global_step++;
+            // --- LEARNING RATE SCHEDULING ---
+            float min_lr = 0; //initialLearningRate * 0.1f;
+            if (global_step < warmup_steps) {
+              // Linear warmup
+              learningRate = initialLearningRate * (float)global_step / (float)warmup_steps;
+            } else {
+              // Polinomial decay
+              float power = 2.0f;
+              float progress = (float)(global_step - warmup_steps) / (float)(total_training_steps - warmup_steps);
+              progress = std::min(1.0f, progress);
+              float decay_factor = std::pow((1.0f - progress), power);
+              learningRate = min_lr + (initialLearningRate - min_lr) * decay_factor;
+            }
+            // Ensure learning rate doesn't go below a minimum value
+            learningRate = std::max(learningRate, 1e-8f);
 
-          optimizer_embeddings.update(tokenEmbeddings, d_tokenEmbeddings, learningRate, global_step, weight_decay, global_scale);
-          linearLayer.update_weights(learningRate, global_scale, global_step);
-          finalLayerNorm.update_weights(learningRate, global_scale, global_step);
-          // Update and reset the embeddings 
-          for (auto & d : decoder_blocks) {
-            d.update_weights(learningRate, global_scale, global_step);
-          }
+            clipper.reset();
+            clipper.accumulate(d_tokenEmbeddings);
+            linearLayer.accumulate_gradients(clipper);
+            finalLayerNorm.accumulate_gradients(clipper);
+            for (auto & block : decoder_blocks) {
+              block.accumulate_gradients(clipper);
+            }
+            current_norm = std::sqrt(clipper.total_sum_sq);
+            float total_tokens = (float)(batchSize * seqLength);
+            global_scale = clipper.get_global_scale(1.0f);
+            //         for (auto & d : d_tokenEmbeddings)  d *= global_scale;
 
+            optimizer_embeddings.update(tokenEmbeddings, d_tokenEmbeddings, learningRate, global_step, weight_decay, global_scale);
+            linearLayer.update_weights(learningRate, global_scale, global_step);
+            finalLayerNorm.update_weights(learningRate, global_scale, global_step);
+            // Update and reset the embeddings 
+            for (auto & d : decoder_blocks) {
+              d.update_weights(learningRate, global_scale, global_step);
+            }
+          }
           if (Mat<float>::enable_arena) {
             if (epoch == 0 && step == 0) {
               // STEP 0 SPECIAL CASE:

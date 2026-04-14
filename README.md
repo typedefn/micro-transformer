@@ -24,7 +24,7 @@ hipcc Transformer.cpp -o transformer -std=c++17 -lrocblas -fopenmp
 ## Training 
 This will start training with hyper-parameters and architecture set, will work fine on a 12 VRAM GPU.
 ```bash
-./transformer --train --batch-size 64 --seq-length 256 --embedding-length 256 --num-heads 4 --decoder-layers 4 --weight-decay 0.075 --initial-learning-rate 0.0002 --label-smoothing 0.02 --warmup-epochs 12 --dropout 0.25 --epochs 125
+./transformer --train --batch-size 64 --seq-length 256 --embedding-length 256 --num-heads 4 --decoder-layers 4 --weight-decay 0.075 --initial-learning-rate 0.0002 --label-smoothing 0.02 --warmup-epochs 12 --dropout 0.25 --epochs 125 --accumulation_steps 8
 ```
 
 ## Inference
