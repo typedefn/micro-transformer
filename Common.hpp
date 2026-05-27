@@ -18,7 +18,6 @@
 #include <atomic>
 #include <utility>
 #include <hip/hip_runtime.h>
-#include <rocblas/rocblas.h>
 
 static unsigned int seed = 1;
 

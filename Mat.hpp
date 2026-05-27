@@ -1,5 +1,98 @@
 #pragma once
 #include "Common.hpp"
+
+// ----------------------------------------------------------------------
+// CUSTOM HIP KERNELS FOR ROW-MAJOR MATRIX MULTIPLICATION
+// ----------------------------------------------------------------------
+
+template <typename T>
+__global__ void hip_batched_mul(
+    const T* A, const T* B, T* C,
+    int M, int N, int K,
+    int stride_a, int stride_b, int stride_c) 
+{
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int batch = blockIdx.z;
+
+    if (row < M && col < N) {
+        const T* a_batch = A + batch * stride_a;
+        const T* b_batch = B + batch * stride_b;
+        T* c_batch = C + batch * stride_c;
+
+        T sum = 0;
+        for (int k = 0; k < K; ++k) {
+            sum += a_batch[row * K + k] * b_batch[k * N + col];
+        }
+        c_batch[row * N + col] = sum;
+    }
+}
+
+template <typename T>
+__global__ void hip_batched_mul_transpose(
+    const T* A, const T* B, T* C,
+    int M, int N, int K,
+    int stride_a, int stride_b, int stride_c) 
+{
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int batch = blockIdx.z;
+
+    if (row < M && col < N) {
+        const T* a_batch = A + batch * stride_a;
+        const T* b_batch = B + batch * stride_b;
+        T* c_batch = C + batch * stride_c;
+
+        T sum = 0;
+        for (int k = 0; k < K; ++k) {
+            // B is transposed (B^T). We read it as B[col, k] instead of B[k, col]
+            sum += a_batch[row * K + k] * b_batch[col * K + k];
+        }
+        c_batch[row * N + col] = sum;
+    }
+}
+
+template <typename T>
+__global__ void hip_batched_mul_lhs_transpose(
+    const T* A, const T* B, T* C,
+    int M, int N, int K,
+    int stride_a, int stride_b, int stride_c) 
+{
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int batch = blockIdx.z;
+
+    if (row < M && col < N) {
+        const T* a_batch = A + batch * stride_a;
+        const T* b_batch = B + batch * stride_b;
+        T* c_batch = C + batch * stride_c;
+
+        T sum = 0;
+        for (int k = 0; k < K; ++k) {
+            // A is transposed (A^T). We read it as A[k, row] instead of A[row, k]
+            sum += a_batch[k * M + row] * b_batch[k * N + col];
+        }
+        c_batch[row * N + col] = sum;
+    }
+}
+
+template <typename T>
+__global__ void hip_mul(
+    const T* A, const T* B, T* C,
+    int M, int N, int K) 
+{
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (row < M && col < N) {
+        T sum = 0;
+        for (int k = 0; k < K; ++k) {
+            sum += A[row * K + k] * B[k * N + col];
+        }
+        C[row * N + col] = sum;
+    }
+}
+
 __global__ void kComputeLogitGradients(const float* predictions, const float* targets, float* gradients, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
@@ -565,24 +658,6 @@ __global__ void kElementWiseMul(const float* a, const float* b, float* c, int si
 }
 
 
-// Static handle for rocBLAS to avoid recreating it constantly
-static rocblas_handle rb_handle = nullptr;
-static std::mutex rb_init_mtx;
-
-static void init_rb_handle() {
-  std::lock_guard<std::mutex> lock(rb_init_mtx);
-  if (!rb_handle) {
-    rocblas_create_handle(&rb_handle);
-  }
-}
-
-static void destroy_rb_handle() {
-    if (rb_handle) {
-        rocblas_destroy_handle(rb_handle);
-        rb_handle = nullptr;
-    }
-}
-
 class GPUMemoryArena {
     void* base_ptr = nullptr;
     size_t total_size = 0;
@@ -593,7 +668,7 @@ public:
     void init(size_t size_bytes = 1024 * 1024 * 512) {
         if (base_ptr) return; 
         total_size = size_bytes;
-        hipError_t err = hipMalloc(&base_ptr, total_size);
+        hipError_t err = (hipMalloc(&base_ptr, total_size));
         if (err != hipSuccess) {
             std::stringstream ss;
             ss << "Failed to allocate GPU Arena: " << hipGetErrorString(err);
@@ -666,6 +741,10 @@ void launch_set_diagonal_kernel(float* data, int rows, int cols, float val) {
 }
 
 void launch_reset_kernel(float* data, int rows, int cols, float val) {
+    if (data == nullptr) {
+      throw std::runtime_error("FATAL: launch_reset_kernel received a null pointer! "
+                                 "Check hipMalloc calls upstream.");
+    }
     int total = rows * cols; // Reset the whole matrix, not just diagonal
     int threads = 256;
     int blocks = (total + threads - 1) / threads;
@@ -705,10 +784,9 @@ public:
     void dirty() { cpu_dirty = true;}
     static bool enable_arena; 
     // --- CONSTRUCTORS ---
-    Mat() : rows(0), cols(0) { init_rb_handle(); reset(); }
+    Mat() = default;
     Mat(int rows, int cols) : rows(rows), cols(cols) {
         from_pool = false; 
-        init_rb_handle();
         allocate_device_memory();
         reset();
         cpu_dirty = false;
@@ -716,7 +794,6 @@ public:
 
     Mat(int rows, int cols, const std::vector<T> & input_data) : rows(rows), cols(cols) {
         from_pool = false; 
-        init_rb_handle();
         allocate_device_memory();
         reset();
         data = input_data;
@@ -731,7 +808,6 @@ public:
     // Copy Constructor (Deep Copy)
     Mat(const Mat& other) : rows(other.rows), cols(other.cols) {
         from_pool = false; 
-        init_rb_handle();
         allocate_device_memory();
         reset();
         if (!other.cpu_dirty || other.d_data == nullptr) {
@@ -775,98 +851,59 @@ public:
     // ----------------------------------------------------------------------
 
     // C = A * B (Batched)
-    // Logic: C_row = A_row * B_row  <=>  C_col = B_col * A_col
-    // RocBLAS (Col-Major): Pass B as Arg1, A as Arg2. No Transpose.
     void batched_mul(const Mat<T>& rhs, Mat<T>& result, int batch_count, int stride_a, int stride_b, int stride_c) {
-        int M = rows / batch_count;     // Rows of A
-        int K = cols;                   // Cols of A / Rows of B
-        int N = rhs.cols;               // Cols of B
-/*
-        if (result.rows != rows || result.cols != N) {
-             result.assign(rows, N); // Auto-resize if needed
-        }
-*/
-        float alpha = 1.0f;
-        float beta = 0.0f;
-
-        // rocBLAS call: C_col (NxM) = B_col (NxK) * A_col (KxM)
-        rocblas_sgemm_strided_batched(rb_handle,
-            rocblas_operation_none, rocblas_operation_none,
-            N, M, K,
-            &alpha,
-            rhs.d_data, N, stride_b,      // Arg1: B
-            this->d_data, K, stride_a,    // Arg2: A
-            &beta,
-            result.d_data, N, stride_c,   // Result: C
-            batch_count
-        );
-        result.cpu_dirty = true;
+      int M = rows / batch_count;     // Rows of A
+      int K = cols;                   // Cols of A / Rows of B
+      int N = rhs.cols;               // Cols of B
+ 
+      dim3 block(16, 16);
+      dim3 grid((N + block.x - 1) / block.x, (M + block.y - 1) / block.y, batch_count);
+ 
+      hip_batched_mul<<<grid, block>>>(
+          this->d_data, rhs.d_data, result.d_data,
+          M, N, K,
+          stride_a, stride_b, stride_c
+      );
+      
+      result.cpu_dirty = true;
     }
 
     // C = A * B^T (Batched)
     // Used for: Q * K^T
-    // Logic: C_col = (A * B^T)^T = B * A^T
-    // RocBLAS: Arg1=B, Arg2=A. Op1=Trans, Op2=NoTrans.
     void batched_mul_transpose(const Mat<T>& rhs, Mat<T>& result, int batch_count, int stride_a, int stride_b, int stride_c) {
-        int M = rows / batch_count;     // Rows of A (Seq)
-        int K = cols;                   // Cols of A (Head)
-        int N = rhs.rows / batch_count; // Rows of B (Seq) -> Cols of B^T
-        // Result should be (Batch*Seq, Seq)
-/*
-        if (result.rows != rows || result.cols != N) {
-            result.assign(rows, N);
-        }
-*/
-        float alpha = 1.0f;
-        float beta = 0.0f;
-
-        // rocBLAS call: C_col (NxM) = B_col^T (NxK) * A_col (KxM) ?? 
-        // Wait: B_col is (KxN). B_col^T is (NxK).
-        rocblas_sgemm_strided_batched(rb_handle,
-            rocblas_operation_transpose, rocblas_operation_none,
-            N, M, K,
-            &alpha,
-            rhs.d_data, K, stride_b,      // Arg1: B (Transposed)
-            this->d_data, K, stride_a,    // Arg2: A (No Transpose)
-            &beta,
-            result.d_data, N, stride_c,
-            batch_count
-        );
-        result.cpu_dirty = true;
+      int M = rows / batch_count;     // Rows of A
+      int K = cols;                   // Cols of A
+      int N = rhs.rows / batch_count; // Rows of B (becomes cols of B^T)
+ 
+      dim3 block(16, 16);
+      dim3 grid((N + block.x - 1) / block.x, (M + block.y - 1) / block.y, batch_count);
+ 
+      hip_batched_mul_transpose<<<grid, block>>>(
+          this->d_data, rhs.d_data, result.d_data,
+          M, N, K,
+          stride_a, stride_b, stride_c
+      );
+      
+      result.cpu_dirty = true;
     }
 
     // C = A^T * B (Batched)
     // Used for: dV = S^T * dO, dK = dS^T * Q
-    // Logic: C_col = (A^T * B)^T = B^T * A
-    // RocBLAS: Arg1=B, Arg2=A. Op1=None, Op2=Trans.
     void batched_mul_lhs_transpose(const Mat<T>& rhs, Mat<T>& result, int batch_count, int stride_a, int stride_b, int stride_c) {
-        int K = rows / batch_count;    // Rows of A (Seq). A^T has K cols.
-        int M = cols;                  // Cols of A (Head/Seq). A^T has M rows.
-        int N = rhs.cols;              // Cols of B.
+      int K = rows / batch_count;    // Rows of A (becomes inner dim K)
+      int M = cols;                  // Cols of A (becomes rows of A^T)
+      int N = rhs.cols;              // Cols of B
 
-        // Result should be (Batch*M, N)
-        // Note: 'rows' of 'this' is Batch*Seq. But 'this' is being transposed.
-        // So result rows = Batch * M.
-/*        if (result.rows != batch_count * M || result.cols != N) {
-             result.assign(batch_count * M, N);
-        }
-*/
-        float alpha = 1.0f;
-        float beta = 0.0f;
+      dim3 block(16, 16);
+      dim3 grid((N + block.x - 1) / block.x, (M + block.y - 1) / block.y, batch_count);
 
-        // rocBLAS call: C_col (NxM) = B_col (NxK) * A_col^T (KxM)
-        // Note: A_col is (MxK). A_col^T is (KxM).
-        rocblas_sgemm_strided_batched(rb_handle,
-            rocblas_operation_none, rocblas_operation_transpose,
-            N, M, K,
-            &alpha,
-            rhs.d_data, N, stride_b,      // Arg1: B
-            this->d_data, M, stride_a,    // Arg2: A (Transposed)
-            &beta,
-            result.d_data, N, stride_c,
-            batch_count
-        );
-        result.cpu_dirty = true;
+      hip_batched_mul_lhs_transpose<<<grid, block>>>(
+          this->d_data, rhs.d_data, result.d_data,
+          M, N, K,
+          stride_a, stride_b, stride_c
+      );
+      
+      result.cpu_dirty = true;
     }
 
     static void computeLogitGradients(const Mat<float>& predictions, const Mat<float>& targets, Mat<float>& grad_output) {
@@ -905,7 +942,7 @@ public:
       if (Mat<float>::enable_arena) {
         d_loss_ptr = (float*)global_arena.allocate(sizeof(float));
       } else {
-        hipError_t err = hipMalloc(&d_loss_ptr, sizeof(float));
+        hipError_t err = (hipMalloc(&d_loss_ptr, sizeof(float)));
         if (err != hipSuccess) {
             std::stringstream ss;
             ss << "Failed to allocate GPU Arena: " << hipGetErrorString(err);
@@ -964,7 +1001,7 @@ public:
       if (enable_arena) {
         d_head_ptrs = (T**)global_arena.allocate(num_heads * sizeof(T*));
       } else {
-        hipError_t err = hipMalloc(&d_head_ptrs, num_heads * sizeof(T*));
+        hipError_t err = (hipMalloc(&d_head_ptrs, num_heads * sizeof(T*)));
         if (err != hipSuccess) {
           std::cerr << "HipMalloc failed (" << sizeof(T*) * num_heads << " bytes): " << hipGetErrorString(err) << std::endl;
           throw std::runtime_error("GPU OOM or Error");
@@ -1122,7 +1159,12 @@ public:
 
     void allocate_device_memory() {
         size_t size = rows * cols * sizeof(T);
-        if (size == 0) { d_data = nullptr; return; }
+        if (size == 0) { 
+          d_data = nullptr;
+          std::stringstream warn;
+          warn << "Requested 0 bytes during allocate device memory.  rows = " << rows << " cols = " << cols << std::endl;
+          std::cerr << warn.str();
+        }
         if (enable_arena) {
             d_data = (T*)global_arena.allocate(size);
             from_pool = true;
@@ -1192,16 +1234,26 @@ public:
     int get_cols() const { return cols; }
 
     void mul(const Mat<T> & rhs, Mat<T> & result) const {
-        assert(cols == rhs.rows);
-        // The result of (rows x cols) * (cols x rhs.cols) is (rows x rhs.cols)
-        if (result.rows != rows || result.cols != rhs.cols) {
-          throw std::runtime_error("MUL - invalid size");
-        }
-        float alpha = 1.0f; float beta = 0.0f;
-        rocblas_sgemm(rb_handle, rocblas_operation_none, rocblas_operation_none,
-                      rhs.cols, rows, cols, &alpha, rhs.d_data, rhs.cols,
-                      d_data, cols, &beta, result.d_data, rhs.cols);
-        result.cpu_dirty = true;
+      // Standard unbatched matrix multiplication
+      assert(cols == rhs.rows);
+
+      if (result.rows != rows || result.cols != rhs.cols) {
+        throw std::runtime_error("MUL - invalid size");
+      }
+
+      int M = rows;
+      int K = cols;
+      int N = rhs.cols;
+
+      dim3 block(16, 16);
+      dim3 grid((N + block.x - 1) / block.x, (M + block.y - 1) / block.y, 1);
+
+      hip_mul<<<grid, block>>>(
+          this->d_data, rhs.d_data, result.d_data,
+          M, N, K
+          );
+
+      result.cpu_dirty = true;
     }
     
     void add(const Mat<T> & rhs, Mat<T> & result) const {

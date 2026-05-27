@@ -7,6 +7,7 @@ class LinearLayer {
     struct LinearCache {
       Mat<float> input;
     };
+    LinearLayer():optimizer_w1(1), optimizer_b1(1) {};
 
     LinearLayer(int inputDim, int hiddenDim, int maxTotalTokens, float weight_decay, int decoder_layers)
       : inputDim(inputDim), hiddenDim(hiddenDim),

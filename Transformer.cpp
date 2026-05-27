@@ -102,7 +102,6 @@ class Transformer {
       float label_smoothing
     ):
     gen(seed),
-    linearLayer(embeddingLength, vindex.size(), seqLength * batchSize, weight_decay, decoder_layers),
     finalLayerNorm(embeddingLength, seqLength * batchSize, "final", weight_decay),
     embeddingLength(embeddingLength),
     seqLength(seqLength),
@@ -844,7 +843,6 @@ int main(int argc, char**argv) {
   if (Mat<float>::enable_arena) {
     global_arena.free_all();
   }
-  destroy_rb_handle();
   return 0;
 }
 
