@@ -770,9 +770,6 @@ template <typename T>
 bool Mat<T>::enable_arena = false;
 
 int main(int argc, char**argv) {
-  if (Mat<float>::enable_arena) {
-    global_arena.init(10ULL * 1024 * 1024 * 1024); 
-  }
   signal(SIGHUP, signalCallbackHandler);
   int embeddingLength = 128;
   int seqLength = 64;
@@ -835,6 +832,10 @@ int main(int argc, char**argv) {
         label_smoothing = atof(argv[i+1]); 
       }
     } 
+  }
+
+  if (Mat<float>::enable_arena) {
+    global_arena.init(10ULL * 1024 * 1024 * 1024); 
   }
   Transformer t(embeddingLength, seqLength, batchSize, num_heads, decoder_layers, train, weight_decay, warmup_epochs, label_smoothing);
 

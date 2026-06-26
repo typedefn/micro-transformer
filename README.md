@@ -17,14 +17,20 @@ To utilize 2 threads on the CPU export the following.  Change as needed per hard
 export OMP_NUM_THREADS=2
 ```
 
+With HIP_VISIBLE_DEVICES=0 you force the application into a strict single-GPU environment on index 0.
+
 ```bash
-hipcc Transformer.cpp -o transformer -std=c++17 -lrocblas -fopenmp
+export HIP_VISIBLE_DEVICES=0
+```
+
+```bash
+hipcc -O3 Kernels.hip -x hip Transformer.cpp -o transformer -std=c++17 -fopenmp
 ```
 
 ## Training 
 This will start training with hyper-parameters and architecture set, will work fine on a 12 VRAM GPU.
 ```bash
-./transformer --train --batch-size 64 --seq-length 256 --embedding-length 256 --num-heads 4 --decoder-layers 4 --weight-decay 0.075 --initial-learning-rate 0.0002 --label-smoothing 0.02 --warmup-epochs 12 --dropout 0.25 --epochs 125 --accumulation_steps 8
+./transformer --train --batch-size 64 --seq-length 256 --embedding-length 256 --num-heads 4 --decoder-layers 4 --weight-decay 0.075 --initial-learning-rate 0.0002 --label-smoothing 0.02 --warmup-epochs 12 --dropout 0.25 --epochs 125 --accumulation-steps 8
 ```
 
 ## Inference
