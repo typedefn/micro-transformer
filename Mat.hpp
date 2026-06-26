@@ -640,6 +640,8 @@ public:
             }
  
             base_ptr = nullptr;
+            total_size = 0; // Reset state entirely
+            offset.store(0, std::memory_order_relaxed);
         }
     }
     size_t get_offset() const {
@@ -1055,6 +1057,26 @@ public:
       }
     }
 
+    Mat& operator=(Mat&& other) noexcept {
+      if (this != &other) {
+        if (d_data && !from_pool) {
+          hipFree(d_data);
+        }
+        rows = other.rows;
+        cols = other.cols;
+        d_data = other.d_data;
+        data = std::move(other.data);
+        cpu_dirty = other.cpu_dirty;
+        from_pool = other.from_pool;
+
+        other.d_data = nullptr; // Prevent double free
+        other.rows = 0;
+        other.cols = 0;
+      }
+      return *this;
+    }
+
+
     // Standard Assignment (Copy)
     Mat & operator=(const Mat & other) {
       if (this == &other) return *this;
@@ -1122,7 +1144,7 @@ public:
 
     void allocate_device_memory() {
         size_t size = rows * cols * sizeof(T);
-        if (size == 0) { d_data = nullptr; return; }
+        if (size == 0) { std::cerr << "Requested 0 bytes..."; d_data = nullptr; return; }
         if (enable_arena) {
             d_data = (T*)global_arena.allocate(size);
             from_pool = true;
